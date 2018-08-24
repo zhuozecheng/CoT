@@ -64,28 +64,34 @@ class TARGET_LSTM(object):
         g_predictions = tensor_array_ops.TensorArray(
             dtype=tf.float32, size=self.sequence_length,
             dynamic_size=False, infer_shape=True)
+        log_predictions = tensor_array_ops.TensorArray(
+            dtype=tf.float32, size=self.sequence_length,
+            dynamic_size=False, infer_shape=True)
 
         ta_emb_x = tensor_array_ops.TensorArray(
             dtype=tf.float32, size=self.sequence_length)
         ta_emb_x = ta_emb_x.unstack(self.processed_x)
 
-        def _pretrain_recurrence(i, x_t, h_tm1, g_predictions):
+        def _pretrain_recurrence(i, x_t, h_tm1, g_predictions, log_predictions):
             h_t = self.g_recurrent_unit(x_t, h_tm1)
             o_t = self.g_output_unit(h_t)
             g_predictions = g_predictions.write(i, tf.nn.softmax(o_t))  # batch x vocab_size
+            log_predictions = log_predictions.write(i, tf.nn.log_softmax(o_t))
             x_tp1 = ta_emb_x.read(i)
-            return i + 1, x_tp1, h_t, g_predictions
+            return i + 1, x_tp1, h_t, g_predictions, log_predictions
 
-        _, _, _, self.g_predictions = control_flow_ops.while_loop(
-            cond=lambda i, _1, _2, _3: i < self.sequence_length,
+        _, _, _, self.g_predictions, self.log_predictions = control_flow_ops.while_loop(
+            cond=lambda i, _1, _2, _3, _4: i < self.sequence_length,
             body=_pretrain_recurrence,
             loop_vars=(tf.constant(0, dtype=tf.int32),
                        tf.nn.embedding_lookup(self.g_embeddings, self.start_token),
-                       self.h0, g_predictions))
+                       self.h0, g_predictions, log_predictions))
 
         self.g_predictions = tf.transpose(
             self.g_predictions.stack(), perm=[1, 0, 2])  # batch_size x seq_length x vocab_size
-        self.g_prediction = tf.reduce_sum(self.g_predictions * tf.one_hot(self.x, self.num_emb, 1.0, 0.0), axis=-1)
+        self.log_predictions = tf.transpose(self.log_predictions.stack(), perm=[1, 0, 2])
+        self.g_prediction = tf.reduce_sum(
+            tf.reduce_sum(self.log_predictions * tf.one_hot(self.x, self.num_emb, 1.0, 0.0), axis=-1), axis=-1)
 
         # pretraining loss
         self.likelihood_loss = -tf.reduce_sum(

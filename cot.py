@@ -16,7 +16,7 @@ START_TOKEN = 0
 PRE_EPOCH_NUM = 0 # supervise (maximum likelihood estimation) epochs (not recommended)
 SEED = 88
 BATCH_SIZE = 64
-M_DROPOUT_RATE = 0.5 # Dropout rate of M (optional)
+M_DROPOUT_RATE = 1.0 # Dropout rate of M (optional)
 
 #########################################################################################
 #  Basic Training Parameters
@@ -72,21 +72,15 @@ def jsd_calculate(sess, generator, oracle, sample_window=200):
     for it in range(sample_window):
         real_s.append(oracle.generate(sess))
         fake_s.append(generator.generate(sess))
+    u = oracle.g_prediction
+    v = generator.g_prediction
     for s in real_s:
-        p_g = sess.run(generator.g_prediction, feed_dict={generator.x:s})
-        p_p = sess.run(oracle.g_prediction, feed_dict={oracle.x:s})
-        p_m = 0.5 * (p_g + p_p)
-        log_p_p = np.log(p_p)
-        log_p_m = np.log(p_m)
-        log_kl_gm = np.mean(np.sum(log_p_p - log_p_m, axis=-1))
-        jsd.append(log_kl_gm)
+        log_kl_pm = sess.run(tf.log(2.0) - tf.reduce_mean(tf.log1p(tf.exp(v - u))),
+                             feed_dict={generator.x:s, oracle.x:s})
+        jsd.append(log_kl_pm)
     for s in fake_s:
-        p_g = sess.run(generator.g_prediction, feed_dict={generator.x:s})
-        p_p = sess.run(oracle.g_prediction, feed_dict={oracle.x:s})
-        p_m = 0.5 * (p_g + p_p)
-        log_p_g = np.log(p_g)
-        log_p_m = np.log(p_m)
-        log_kl_gm = np.mean(np.sum(log_p_g - log_p_m, axis=-1))
+        log_kl_gm = sess.run(tf.log(2.0) - tf.reduce_mean(tf.log1p(tf.exp(u - v))),
+                             feed_dict={generator.x:s, oracle.x:s})
         jsd.append(log_kl_gm)
     jsd = np.mean(jsd)
     return jsd
@@ -143,7 +137,7 @@ def main():
     print('Start Cooperative Training...')
     for iter_idx in range(TOTAL_BATCH):
         # Train the generator for one step
-        for it in range(1):
+        for it in range(2):
             samples = generator.generate(sess)
             rewards = mediator.get_reward(sess, np.concatenate([samples, samples], axis=0))
             feed = {generator.x: samples, generator.rewards: rewards[0:BATCH_SIZE]}
@@ -181,13 +175,14 @@ def main():
                 }
                 bnll = sess.run(mediator.likelihood_loss, feed)
                 bnll_.append(bnll)
-                sess.run(mediator.dropout_on)
+                # sess.run(mediator.dropout_on)
                 _ = sess.run(mediator.likelihood_updates, feed)
-                sess.run(mediator.dropout_off)
-            if iter_idx % 10 == 0:
-                bnll = np.mean(bnll_)
-                print("mediator cooptrain iter#%d, balanced_nll %f" % (iter_idx, bnll))
-                log.write("%d\t%f\n" % (iter_idx, bnll))
+                # sess.run(mediator.dropout_off)
+        if (iter_idx * 4) % gen_data_loader.num_batch == 0:
+            bnll = np.mean(bnll_)
+            gnll = sess.run(mediator.likelihood_loss, feed_dict={mediator.x: np.reshape([generator.generate(sess), generator.generate(sess)], [BATCH_SIZE*2, SEQ_LENGTH])})
+            print("mediator cooptrain iter#%d, balanced_nll %f, g_nll %f" % (iter_idx, bnll, gnll))
+            log.write("%d\t%f\n" % (iter_idx, bnll))
         if iter_idx % gen_data_loader.num_batch == 0:
             jsd = jsd_calculate(sess, generator, target_lstm)
             print('cooptrain epoch#', iter_idx // gen_data_loader.num_batch, 'jsd ', jsd)

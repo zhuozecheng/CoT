@@ -1,11 +1,11 @@
 import tensorflow as tf
 from tensorflow.python.ops import tensor_array_ops, control_flow_ops
-
+from AMSGrad import AMSGrad
 
 class Generator(object):
     def __init__(self, num_emb, batch_size, emb_dim, hidden_dim,
                  sequence_length, start_token,
-                 learning_rate=1e-2, reward_gamma=0.95, name="generator", dropout_rate=0.5):
+                 learning_rate=1e-3, reward_gamma=0.95, name="generator", dropout_rate=0.5):
         self.num_emb = num_emb
         self.batch_size = batch_size
         self.emb_dim = emb_dim
@@ -103,8 +103,9 @@ class Generator(object):
                        self.h0, g_predictions, log_predictions))
 
         self.g_predictions = tf.transpose(self.g_predictions.stack(), perm=[1, 0, 2])  # batch_size x seq_length x vocab_size
-        self.g_prediction = tf.reduce_sum(self.g_predictions * tf.one_hot(self.x, self.num_emb, 1.0, 0.0), axis=-1)
         self.log_predictions = tf.transpose(self.log_predictions.stack(), perm=[1, 0, 2])
+        self.g_prediction = tf.reduce_sum(
+            tf.reduce_sum(self.log_predictions * tf.one_hot(self.x, self.num_emb, 1.0, 0.0), axis=-1), axis=-1)
         self.self_log_likelihood = tf.cumsum(tf.reduce_sum(self.log_predictions * one_hot_x, axis=-1), exclusive=True, axis=-1)
         self.med_log_likelihood = tf.cumsum(tf.reduce_sum(self.rewards * one_hot_x, axis=-1), exclusive=True, axis=-1)
         # pretraining loss
@@ -127,6 +128,7 @@ class Generator(object):
             self.g_predictions * (self.rewards - self.log_predictions)
         ) / batch_size #/ sequence_length
         g_opt = self.g_optimizer(self.learning_rate)
+
 
         self.g_grad, _ = tf.clip_by_global_norm(tf.gradients(self.g_loss, self.g_params), self.grad_clip)
         self.g_updates = g_opt.apply_gradients(zip(self.g_grad, self.g_params))
@@ -244,4 +246,4 @@ class Generator(object):
         return unit
 
     def g_optimizer(self, *args, **kwargs):
-        return tf.train.AdamOptimizer(*args, **kwargs)
+        return AMSGrad(*args, **kwargs)
